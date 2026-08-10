@@ -1,0 +1,17 @@
+export const CompanyName = [
+  "Audi",
+  "BMW",
+  "Honda",
+  "Hyundai",
+  "Kia",
+  "Maruti Suzuki",
+  "Mahindra",
+  "Mercedes-Benz",
+  "MG",
+  "Nissan",
+  "Renault",
+  "Skoda",
+  "Tata Motors",
+  "Toyota",
+  "Volkswagen",
+];
