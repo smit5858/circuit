@@ -1,7 +1,17 @@
 import React, { useEffect, useRef, useState } from "react";
-import BCM from "../assets/bcm.png";
+import { addComponent, updateComponent } from "../services/componentData";
+import { useModuleSelection } from "../context/ModuleSelectionContext";
+import {
+  resolveModule,
+  getComponentsByModule,
+} from "../services/componentData";
+import { getModulePhotoUrl } from "../services/carmodals";
 
 const Diagram = () => {
+  const { formData } = useModuleSelection();
+  const [moduleId, setModuleId] = useState(null);
+  const [photoUrl, setPhotoUrl] = useState(null);
+  const [photoError, setPhotoError] = useState(false);
   const [mode, setMode] = useState("test");
   const [zoom, setZoom] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
@@ -61,6 +71,8 @@ const Diagram = () => {
     voltage: "",
     description: "",
   });
+  const [isSavingPart, setIsSavingPart] = useState(false);
+  const [partError, setPartError] = useState("");
   const [customer, setCustomer] = useState(() => {
     try {
       const saved = localStorage.getItem("bcm_customer_info");
@@ -114,6 +126,36 @@ const Diagram = () => {
     return () => container.removeEventListener("wheel", wheelHandler);
   }, []);
 
+  useEffect(() => {
+    const { company, model, moduler, mode } = formData || {};
+    if (!company || !model || !moduler || !mode) {
+      setModuleId(null);
+      setParts([]);
+      setPhotoUrl(null);
+      setPhotoError(false);
+      return;
+    }
+
+    (async () => {
+      try {
+        const { module_id } = await resolveModule({
+          company,
+          model,
+          moduler,
+          side: mode,
+        });
+        setModuleId(module_id);
+        setPhotoUrl(getModulePhotoUrl(module_id));
+        setPhotoError(false);
+        const existingParts = await getComponentsByModule(module_id);
+        setParts(existingParts);
+      } catch (err) {
+        console.error("Failed to load module/parts:", err);
+        setPhotoUrl(null);
+      }
+    })();
+  }, [formData?.company, formData?.model, formData?.moduler, formData?.mode]);
+
   const handleWheel = (e) => {
     e.preventDefault();
     setZoom((z) => {
@@ -156,6 +198,23 @@ const Diagram = () => {
     const height = Math.abs(selectionBox.curY - selectionBox.startY);
     setSelectionBox(null);
     if (width < 1 || height < 1) return; // too small, ignore accidental click
+
+    const newRect = { x, y, width, height };
+    const overlapsExisting = parts.some((p) =>
+      rectsOverlap(newRect, {
+        x: p.x,
+        y: p.y,
+        width: p.width ?? 6,
+        height: p.height ?? 6,
+      }),
+    );
+    if (overlapsExisting) {
+      alert(
+        "This area overlaps an existing part. Please select an empty area.",
+      );
+      return;
+    }
+
     setPendingCoords({ x, y, width, height });
     setPartDraft({ name: "", value: "", voltage: "", description: "" });
     setSelectedPart(null);
@@ -178,6 +237,49 @@ const Diagram = () => {
     };
   };
 
+  const rectsOverlap = (a, b) => {
+    const ax = Number(a.x);
+    const ay = Number(a.y);
+    const aw = Number(a.width);
+    const ah = Number(a.height);
+    const bx = Number(b.x);
+    const by = Number(b.y);
+    const bw = Number(b.width);
+    const bh = Number(b.height);
+
+    return (
+      ax < bx + bw &&
+      ax + aw > bx &&
+      ay < by + bh &&
+      ay + ah > by
+    );
+  };
+
+  const currentSelectionRect =
+    isSelecting && selectionBox
+      ? {
+          x: Math.min(selectionBox.startX, selectionBox.curX),
+          y: Math.min(selectionBox.startY, selectionBox.curY),
+          width: Math.abs(selectionBox.curX - selectionBox.startX),
+          height: Math.abs(selectionBox.curY - selectionBox.startY),
+        }
+      : null;
+
+  const overlappingPartIds = currentSelectionRect
+    ? new Set(
+        parts
+          .filter((p) =>
+            rectsOverlap(currentSelectionRect, {
+              x: p.x,
+              y: p.y,
+              width: p.width ?? 6,
+              height: p.height ?? 6,
+            }),
+          )
+          .map((p) => p.id),
+      )
+    : new Set();
+
   const handleSelectionStart = (e) => {
     if (mode !== "dev" || zoom > 1) return;
     e.stopPropagation();
@@ -194,44 +296,16 @@ const Diagram = () => {
       !partDraft.voltage.trim()
     )
       return;
-    const coords = pendingCoords || { x: 45, y: 45, width: 8, height: 6 };
 
-    if (partDraft.id) {
-      setParts((prev) =>
-        prev.map((p) =>
-          p.id === partDraft.id
-            ? {
-                ...p,
-                ...partDraft,
-                x: coords.x,
-                y: coords.y,
-                width: coords.width,
-                height: coords.height,
-                published: false,
-              }
-            : p,
-        ),
-      );
-    } else {
-      setParts((prev) => [
-        ...prev,
-        {
-          id: Date.now(),
-          ...partDraft,
-          x: coords.x,
-          y: coords.y,
-          width: coords.width,
-          height: coords.height,
-          published: false,
-        },
-      ]);
-    }
+    // Don't call the API yet — just move to the customer form.
+    // partDraft + pendingCoords stay in state and are used in
+    // handleCustomerSubmit once customer info is confirmed.
+    setPartError("");
     setShowPartForm(false);
-    setPendingCoords(null);
     setShowCustomerForm(true);
   };
 
-  const handleCustomerSubmit = (e) => {
+  const handleCustomerSubmit = async (e) => {
     e.preventDefault();
     if (
       !customer.name.trim() ||
@@ -245,19 +319,58 @@ const Diagram = () => {
       /* ignore storage errors */
     }
     setHasSavedCustomer(true);
-    setShowCustomerForm(false);
+
+    const coords = pendingCoords || { x: 45, y: 45, width: 8, height: 6 };
+    const payload = {
+      name: partDraft.name.trim(),
+      value: partDraft.value.trim(),
+      voltage: partDraft.voltage.trim(),
+      description: partDraft.description?.trim() || "",
+      x: coords.x,
+      y: coords.y,
+      width: coords.width,
+      height: coords.height,
+      published: false, // new/edited parts stay unpublished until reviewed
+    };
+
+    setIsSavingPart(true);
+    setPartError("");
+
+    try {
+      if (!moduleId) {
+        setPartError("Please select company, model, moduler and side first.");
+        setIsSavingPart(false);
+        return;
+      }
+      if (partDraft.id) {
+        const updated = await updateComponent(partDraft.id, payload);
+        setParts((prev) =>
+          prev.map((p) => (p.id === partDraft.id ? { ...p, ...updated } : p)),
+        );
+      } else {
+        const created = await addComponent(moduleId, payload);
+        setParts((prev) => [...prev, created]);
+      }
+      setShowCustomerForm(false);
+      setPendingCoords(null);
+    } catch (error) {
+      console.error("Failed to save part:", error);
+      setPartError("Couldn't save this part. Please try again.");
+    } finally {
+      setIsSavingPart(false);
+    }
   };
 
   return (
-    <div className="w-full min-h-screen bg-white p-6 flex justify-center">
+    <div className="w-full min-h-screen bg-gray-50 p-8 flex justify-center">
       <div className="flex-1">
         {/* Tabs */}
-        <div className="inline-flex items-center rounded-full   bg-gray-100 p-1">
+        <div className="inline-flex items-center rounded-full bg-gray-100 p-1 border border-gray-200 shadow-sm">
           <button
             onClick={() => setMode("test")}
             className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${
               mode === "test"
-                ? "bg-white text-gray-900 shadow-sm"
+                ? "bg-white text-gray-900 shadow-sm ring-1 ring-black/5"
                 : "text-gray-500 hover:text-gray-900"
             }`}
           >
@@ -268,7 +381,7 @@ const Diagram = () => {
             onClick={() => setMode("dev")}
             className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${
               mode === "dev"
-                ? "bg-white text-gray-900 shadow-sm"
+                ? "bg-white text-gray-900 shadow-sm ring-1 ring-black/5"
                 : "text-gray-500 hover:text-gray-900"
             }`}
           >
@@ -280,7 +393,7 @@ const Diagram = () => {
         <div className="mt-6 mx-auto">
           <div
             ref={containerRef}
-            className="h-175 min-w-125 overflow-hidden rounded-lg border border-gray-200 relative select-none"
+            className="h-175 min-w-125 overflow-hidden rounded-2xl border border-gray-200 shadow-sm bg-white relative select-none"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -293,19 +406,31 @@ const Diagram = () => {
                 transformOrigin: "center center",
               }}
             >
-              <img
-                src={BCM}
-                alt="Image"
-                onDoubleClick={handleDoubleClick}
-                draggable={false}
-                className={`h-full w-full object-cover ${
-                  zoom > 1
-                    ? isDragging
-                      ? "cursor-grabbing"
-                      : "cursor-grab"
-                    : "cursor-zoom-in"
-                }`}
-              />
+              {!moduleId ? (
+                <div className="flex h-full w-full items-center justify-center text-gray-400 text-sm text-center px-4">
+                  Please select company, model, moduler and side to view the
+                  module.
+                </div>
+              ) : photoError ? (
+                <div className="flex h-full w-full items-center justify-center text-gray-400 text-sm text-center px-4">
+                  No circuit board photo uploaded for this module yet.
+                </div>
+              ) : (
+                <img
+                  src={photoUrl}
+                  alt="Circuit board"
+                  onDoubleClick={handleDoubleClick}
+                  draggable={false}
+                  onError={() => setPhotoError(true)}
+                  className={`h-full w-full object-cover ${
+                    zoom > 1
+                      ? isDragging
+                        ? "cursor-grabbing"
+                        : "cursor-grab"
+                      : "cursor-zoom-in"
+                  }`}
+                />
+              )}
 
               {visibleParts.map((part) => (
                 <button
@@ -334,9 +459,11 @@ const Diagram = () => {
                   }}
                   title={part.name}
                   className={`absolute rounded-sm border-2 shadow-md transition-transform hover:scale-105 ${
-                    !part.published
-                      ? "bg-amber-400/30 border-amber-400"
-                      : "bg-blue-500/30 border-blue-500"
+                    overlappingPartIds.has(part.id)
+                      ? "bg-red-500/30 border-red-500"
+                      : !part.published
+                        ? "bg-amber-400/30 border-amber-400"
+                        : "bg-blue-500/30 border-blue-500"
                   }`}
                   style={{
                     left: `${part.x}%`,
@@ -349,7 +476,11 @@ const Diagram = () => {
 
               {isSelecting && selectionBox && (
                 <div
-                  className="absolute border-2 border-dashed border-blue-500 bg-blue-500/20 pointer-events-none"
+                  className={`absolute border-2 border-dashed pointer-events-none ${
+                    overlappingPartIds.size > 0
+                      ? "border-red-500 bg-red-500/20"
+                      : "border-blue-500 bg-blue-500/20"
+                  }`}
                   style={{
                     left: `${Math.min(selectionBox.startX, selectionBox.curX)}%`,
                     top: `${Math.min(selectionBox.startY, selectionBox.curY)}%`,
@@ -360,7 +491,7 @@ const Diagram = () => {
               )}
             </div>
 
-            <div className="absolute bottom-3 right-3 flex items-center gap-2 bg-white/90 rounded-full shadow px-2 py-1">
+            <div className="absolute bottom-3 right-3 flex items-center gap-2 bg-white rounded-full shadow-md border border-gray-100 px-2 py-1.5">
               <button
                 onClick={() =>
                   setZoom((z) => {
@@ -370,7 +501,7 @@ const Diagram = () => {
                     return newZoom;
                   })
                 }
-                className="w-7 h-7 rounded-full text-gray-700 hover:bg-gray-100"
+                className="w-7 h-7 rounded-full text-gray-600 font-medium hover:bg-gray-100 hover:text-gray-900 transition"
               >
                 −
               </button>
@@ -385,7 +516,7 @@ const Diagram = () => {
                     return newZoom;
                   })
                 }
-                className="w-7 h-7 rounded-full text-gray-700 hover:bg-gray-100"
+                className="w-7 h-7 rounded-full text-gray-600 font-medium hover:bg-gray-100 hover:text-gray-900 transition"
               >
                 +
               </button>
@@ -394,37 +525,51 @@ const Diagram = () => {
         </div>
       </div>
       {/* component info */}
-      <div className="flex flex-col gap-4 ml-8 max-w-55 w-full justify-center">
+      <div className="flex flex-col ml-8 max-w-72 w-full h-fit self-center bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
         {selectedPart ? (
           <>
-            <h3 className="text-base font-semibold text-gray-900">
-              {selectedPart.name}
-            </h3>
-            <div className="flex justify-between text-sm border-b pb-1">
-              <span className="text-gray-500">Value</span>
-              <span className="font-medium text-gray-900">
+            <div className="flex items-center gap-2 mb-4 pb-3 border-b border-gray-100">
+              <span className="w-2 h-2 rounded-full bg-blue-500" />
+              <h3 className="text-sm font-semibold text-gray-900 tracking-tight">
+                {selectedPart.name}
+              </h3>
+            </div>
+            <div className="flex justify-between items-center text-sm py-2 border-b border-gray-100">
+              <span className="text-gray-400 text-xs uppercase tracking-wide">
+                Value
+              </span>
+              <span className="font-medium text-gray-900 font-mono text-xs">
                 {selectedPart.value}
               </span>
             </div>
-            <div className="flex justify-between text-sm border-b pb-1">
-              <span className="text-gray-500">Voltage</span>
-              <span className="font-medium text-gray-900">
+            <div className="flex justify-between items-center text-sm py-2 border-b border-gray-100">
+              <span className="text-gray-400 text-xs uppercase tracking-wide">
+                Voltage
+              </span>
+              <span className="font-medium text-gray-900 font-mono text-xs">
                 {selectedPart.voltage}
               </span>
             </div>
             {selectedPart.description && (
-              <div className="flex flex-col justify-between text-sm border-b pb-1">
-                <span className="text-gray-500">Description</span>
-                <span className="font-medium text-gray-900">
+              <div className="flex flex-col gap-1 text-sm py-2">
+                <span className="text-gray-400 text-xs uppercase tracking-wide">
+                  Description
+                </span>
+                <span className="font-medium text-gray-700 leading-relaxed">
                   {selectedPart.description}
                 </span>
               </div>
             )}
           </>
         ) : (
-          <p className="text-sm text-gray-400">
-            Click a marker on the image to see part details
-          </p>
+          <div className="flex flex-col items-center text-center gap-2 py-6">
+            <div className="w-10 h-10 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-300 text-lg">
+              ⓘ
+            </div>
+            <p className="text-sm text-gray-400 leading-relaxed">
+              Click a marker on the image to see part details
+            </p>
+          </div>
         )}
       </div>
 
@@ -485,6 +630,7 @@ const Diagram = () => {
                 className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                 rows={3}
               />
+              {partError && <p className="text-xs text-red-500">{partError}</p>}
               <p className="text-xs text-gray-400 -mt-1">
                 📍 Position: {Math.round(pendingCoords?.x ?? 50)}%,{" "}
                 {Math.round(pendingCoords?.y ?? 50)}% &nbsp;•&nbsp; Size:{" "}
@@ -504,9 +650,14 @@ const Diagram = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-full text-sm font-medium bg-linear-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 shadow-sm transition"
+                  disabled={isSavingPart}
+                  className="px-5 py-2 rounded-full text-sm font-medium bg-linear-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {partDraft.id ? "Update" : "Continue →"}
+                  {isSavingPart
+                    ? "Saving..."
+                    : partDraft.id
+                      ? "Update"
+                      : "Continue →"}
                 </button>
               </div>
             </form>
@@ -572,6 +723,7 @@ const Diagram = () => {
                 }
                 className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition"
               />
+              {partError && <p className="text-xs text-red-500">{partError}</p>}
               <div className="flex justify-end gap-2 mt-2">
                 <button
                   type="button"
@@ -582,9 +734,10 @@ const Diagram = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-full text-sm font-medium bg-linear-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 shadow-sm transition"
+                  disabled={isSavingPart}
+                  className="px-5 py-2 rounded-full text-sm font-medium bg-linear-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Save
+                  {isSavingPart ? "Saving..." : "Save"}
                 </button>
               </div>
             </form>

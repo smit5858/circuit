@@ -1,17 +1,13 @@
 import React, { useState } from "react";
 import LOGO from "../../assets/logo.svg";
 import { CompanyName } from "../../data/company";
-import { carModals } from "../../services/carmodals";
+import { carCompanies, carModals } from "../../services/carmodals";
+import { useModuleSelection } from "../../context/ModuleSelectionContext";
+import { useEffect } from "react";
 
 const Sidebar = () => {
-    const initialFormData = {
-        company: "",
-        model: "",
-        moduler: "",
-        mode: "Side 1",
-    };
-
- const [formData, setFormData] = useState(initialFormData);
+const { formData, setFormData } = useModuleSelection();
+const [company, setCompany] = useState([]);
  const [models, setModels] = useState([]);
  const [loading, setLoading] = useState(false);
 
@@ -31,6 +27,19 @@ const Sidebar = () => {
         }
     };
 
+    const fetchComapny  = async () => {
+        try {
+            setLoading(true);
+            const res = await carCompanies();
+            setCompany(res || []);
+        } catch (error) {
+            console.error(error);
+            setCompany([]);            
+        } finally {
+            setLoading(false);
+        }
+    }
+
     const handleCompanyChange = (e) => {
         const company = e.target.value;
 
@@ -42,6 +51,10 @@ const Sidebar = () => {
             setModels([]);
         }
     };
+
+    useEffect(() => {
+        fetchComapny();
+    }, [])
 
     return (
         <aside className="w-72 min-h-screen bg-white border-r border-gray-200 shadow-sm">
@@ -89,7 +102,7 @@ const Sidebar = () => {
                         >
                             <option value="">Select company</option>
 
-                            {CompanyName.map((item) => (
+                            {company.map((item) => (
                                 <option key={item} value={item}>
                                     {item}
                                 </option>
@@ -180,15 +193,6 @@ const Sidebar = () => {
                                 {/* {loading ? "Loading models..." : "Select model"} */}
                                 Select model
                             </option>
-
-                            {/* {models.map((item) => (
-                                <option
-                                    key={item.Model_ID}
-                                    value={item.Model_ID}
-                                >
-                                    {item.Model_Name}
-                                </option>
-                            ))} */}
 
                             <option value="Airbag Control Module">Airbag Control Module</option>
                             <option value="ADAS Module">ADAS Module</option>

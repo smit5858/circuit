@@ -4,9 +4,14 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const logger = require('./config/logger');
 
+const carRoutes = require("./routes/car.routes");
+const carModuleRoutes = require("./routes/carModule.routes");
+const partRoutes = require("./routes/part.routes");
+
 const app = express();
 
 app.use(helmet());
+app.use(helmet.crossOriginResourcePolicy({ policy: "cross-origin" }));
 app.use(cors());
 app.use(express.json());
 
@@ -20,6 +25,9 @@ app.get('/', (req, res) => {
 });
 
 // Example: app.use('/api/users', require('./routes/userRoutes'));
+app.use("/api/cars", carRoutes);
+app.use("/api/car-modules", carModuleRoutes);
+app.use("/api/parts", partRoutes);
 
 // 404 handler
 app.use((req, res) => {

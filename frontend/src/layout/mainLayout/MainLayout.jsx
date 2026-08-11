@@ -1,16 +1,19 @@
 import React, { memo } from 'react'
 import Sidebar from '../sidebar/sidebar'
+import { ModuleSelectionProvider } from '../../context/ModuleSelectionContext'
 
 const MainLayout = memo(({ children }) => {
   return (
-    <div className='flex'>
+    <ModuleSelectionProvider>
+      <div className='flex'>
         <div className="sidebar">
-            <Sidebar />
+          <Sidebar />
         </div>
         <main className='flex-1'>
-            {children}
+          {children}
         </main>
-    </div>
+      </div>
+    </ModuleSelectionProvider>
   );
 });
 
