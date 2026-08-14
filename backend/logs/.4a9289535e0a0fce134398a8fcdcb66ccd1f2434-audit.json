@@ -1,0 +1,25 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "D:\\Madhuram Motors\\backend\\logs\\.4a9289535e0a0fce134398a8fcdcb66ccd1f2434-audit.json",
+    "files": [
+        {
+            "date": 1786533352329,
+            "name": "D:\\Madhuram Motors\\backend\\logs\\app-2026-08-12.log",
+            "hash": "08d4ae2d9775501133ecde372881483c797140fdbf2d021484075d4e1b069329"
+        },
+        {
+            "date": 1786597870333,
+            "name": "D:\\Madhuram Motors\\backend\\logs\\app-2026-08-13.log",
+            "hash": "0dc6ec3c90dc559249cc89f40c3863e4f3498b3c49e26c7971f2798f80e8d219"
+        },
+        {
+            "date": 1786685244767,
+            "name": "D:\\Madhuram Motors\\backend\\logs\\app-2026-08-14.log",
+            "hash": "a9a095d93f8f9e872c9919fe66d23f044f237dc3545677f05605a74204a9b7ba"
+        }
+    ],
+    "hashType": "sha256"
+}

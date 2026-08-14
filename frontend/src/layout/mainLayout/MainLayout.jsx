@@ -5,7 +5,7 @@ import { ModuleSelectionProvider } from '../../context/ModuleSelectionContext'
 const MainLayout = memo(({ children }) => {
   return (
     <ModuleSelectionProvider>
-      <div className='flex'>
+      <div className='flex flex-col md:flex-row'>
         <div className="sidebar">
           <Sidebar />
         </div>

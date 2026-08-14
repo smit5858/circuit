@@ -6,14 +6,17 @@ const initialFormData = {
   company: "",
   model: "",
   moduler: "",
-  mode: "Side 1",
+  mode: "side1",
 };
 
 export const ModuleSelectionProvider = ({ children }) => {
   const [formData, setFormData] = useState(initialFormData);
+  const [modulePhoto, setModulePhoto] = useState(null);
+  const [moduleId, setModuleId] = useState(null);
+
 
   return (
-    <ModuleSelectionContext.Provider value={{ formData, setFormData }}>
+    <ModuleSelectionContext.Provider value={{ formData, setFormData, modulePhoto, setModulePhoto, moduleId, setModuleId }}>
       {children}
     </ModuleSelectionContext.Provider>
   );

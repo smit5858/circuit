@@ -1,15 +1,19 @@
 import React, { useEffect, useRef, useState } from "react";
-import { addComponent, updateComponent } from "../services/componentData";
-import { useModuleSelection } from "../context/ModuleSelectionContext";
 import {
-  resolveModule,
-  getComponentsByModule,
+  addComponent,
+  updateComponent,
+  getModuleParts,
 } from "../services/componentData";
-import { getModulePhotoUrl } from "../services/carmodals";
+import { useModuleSelection } from "../context/ModuleSelectionContext";
+import SelectionOverlay from "../components/diagram/SelectionOverlay";
+import PartMarker from "../components/diagram/PartMarker";
+import ZoomControls from "../components/diagram/ZoomControls";
+import PartDetailsPanel from "../components/diagram/PartDetailsPanel";
+import AddEditPartModal from "../components/diagram/AddEditPartModal";
+import CustomerInfoModal from "../components/diagram/CustomerInfoModal";
 
 const Diagram = () => {
-  const { formData } = useModuleSelection();
-  const [moduleId, setModuleId] = useState(null);
+  const { formData, modulePhoto, moduleId, side } = useModuleSelection();
   const [photoUrl, setPhotoUrl] = useState(null);
   const [photoError, setPhotoError] = useState(false);
   const [mode, setMode] = useState("test");
@@ -18,45 +22,9 @@ const Diagram = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const containerRef = useRef(null);
+  const imgRef = useRef(null);
 
-  const [parts, setParts] = useState([
-    {
-      id: 1,
-      name: "D70F3634 MCU",
-      value: "IA1 1149EEC06",
-      voltage: "5V",
-      description: "",
-      x: 32,
-      y: 38,
-      width: 8,
-      height: 6,
-      published: true,
-    },
-    {
-      id: 2,
-      name: "Crystal Oscillator",
-      value: "4.9152 MHz",
-      voltage: "3.3V",
-      description: "",
-      x: 23,
-      y: 63,
-      width: 8,
-      height: 6,
-      published: true,
-    },
-    {
-      id: 3,
-      name: "Driver IC 102",
-      value: "HC4051",
-      voltage: "12V",
-      description: "",
-      x: 38,
-      y: 79,
-      width: 8,
-      height: 6,
-      published: true,
-    },
-  ]);
+  const [parts, setParts] = useState([]);
   const [selectedPart, setSelectedPart] = useState(null);
 
   // --- Dev-mode add/edit + customer form ---
@@ -129,32 +97,54 @@ const Diagram = () => {
   useEffect(() => {
     const { company, model, moduler, mode } = formData || {};
     if (!company || !model || !moduler || !mode) {
-      setModuleId(null);
       setParts([]);
       setPhotoUrl(null);
       setPhotoError(false);
+    }
+  }, [formData?.company, formData?.model, formData?.moduler, formData?.mode]);
+
+  useEffect(() => {
+    if (!moduleId) {
+      setParts([]);
       return;
     }
 
     (async () => {
       try {
-        const { module_id } = await resolveModule({
-          company,
-          model,
-          moduler,
-          side: mode,
+        const existingParts = await getModuleParts({
+          carModelId: moduleId, 
+          name: formData.moduler,
+          side: formData?.mode,
         });
-        setModuleId(module_id);
-        setPhotoUrl(getModulePhotoUrl(module_id));
-        setPhotoError(false);
-        const existingParts = await getComponentsByModule(module_id);
         setParts(existingParts);
       } catch (err) {
-        console.error("Failed to load module/parts:", err);
-        setPhotoUrl(null);
+        console.error("Failed to load parts for module:", err);
+        setParts([]);
       }
     })();
-  }, [formData?.company, formData?.model, formData?.moduler, formData?.mode]);
+  }, [moduleId, formData?.mode]);
+
+  useEffect(() => {
+    if (modulePhoto) {
+      let imageUrl = modulePhoto;
+
+      // Remove duplicate prefix
+      if (
+        imageUrl.startsWith("data:image/") &&
+        imageUrl.indexOf("data:image/", 11) !== -1
+      ) {
+        imageUrl = imageUrl.replace(
+          /^data:image\/[^;]+;base64,data:image\/[^;]+;base64,/,
+          "data:image/png;base64,",
+        );
+      }
+
+      setPhotoUrl(imageUrl);
+      setPhotoError(false);
+    } else {
+      setPhotoUrl(null);
+    }
+  }, [modulePhoto]);
 
   const handleWheel = (e) => {
     e.preventDefault();
@@ -229,8 +219,45 @@ const Diagram = () => {
     });
   };
 
+  const handleZoomOut = () =>
+    setZoom((z) => {
+      const newZoom = Math.max(1, z - 0.25);
+      if (newZoom === 1) setPosition({ x: 0, y: 0 });
+      else setPosition((pos) => clampPosition(pos, newZoom));
+      return newZoom;
+    });
+
+  const handleZoomIn = () =>
+    setZoom((z) => {
+      const newZoom = Math.min(4, z + 0.25);
+      setPosition((pos) => clampPosition(pos, newZoom));
+      return newZoom;
+    });
+
+  const handleMarkerSelect = (part) => {
+    setSelectedPart(part);
+    if (mode === "dev") {
+      setPendingCoords({
+        x: part.x,
+        y: part.y,
+        width: part.width ?? 6,
+        height: part.height ?? 6,
+      });
+      setPartDraft({
+        id: part.id,
+        name: part.name,
+        value: part.value,
+        voltage: part.voltage,
+        description: part.description || "",
+      });
+      setShowPartForm(true);
+    }
+  };
+
   const getPercentCoords = (e) => {
-    const rect = containerRef.current.getBoundingClientRect();
+    const el = imgRef.current;
+    if (!el) return { x: 0, y: 0 };
+    const rect = el.getBoundingClientRect();
     return {
       x: ((e.clientX - rect.left) / rect.width) * 100,
       y: ((e.clientY - rect.top) / rect.height) * 100,
@@ -247,12 +274,7 @@ const Diagram = () => {
     const bw = Number(b.width);
     const bh = Number(b.height);
 
-    return (
-      ax < bx + bw &&
-      ax + aw > bx &&
-      ay < by + bh &&
-      ay + ah > by
-    );
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
   };
 
   const currentSelectionRect =
@@ -320,17 +342,23 @@ const Diagram = () => {
     }
     setHasSavedCustomer(true);
 
-    const coords = pendingCoords || { x: 45, y: 45, width: 8, height: 6 };
+    const coords = pendingCoords;
     const payload = {
-      name: partDraft.name.trim(),
-      value: partDraft.value.trim(),
-      voltage: partDraft.voltage.trim(),
+      carModuleId: moduleId,
+      partName: partDraft.name.trim(),
+      partNumber: partDraft.value.trim(),
+      partValue: partDraft.voltage.trim(),
       description: partDraft.description?.trim() || "",
       x: coords.x,
       y: coords.y,
       width: coords.width,
       height: coords.height,
-      published: false, // new/edited parts stay unpublished until reviewed
+      side: formData?.mode,
+      published: false,
+      addedBy: customer.name.trim(),
+      customerPhone: customer.phone.trim(),
+      customerEmail: customer.email.trim(),
+      customerBusiness: customer.business?.trim() || "",
     };
 
     setIsSavingPart(true);
@@ -348,7 +376,7 @@ const Diagram = () => {
           prev.map((p) => (p.id === partDraft.id ? { ...p, ...updated } : p)),
         );
       } else {
-        const created = await addComponent(moduleId, payload);
+        const created = await addComponent(payload);
         setParts((prev) => [...prev, created]);
       }
       setShowCustomerForm(false);
@@ -362,7 +390,7 @@ const Diagram = () => {
   };
 
   return (
-    <div className="w-full min-h-screen bg-gray-50 p-8 flex justify-center">
+   <div className="w-full h-full bg-gray-50 p-4 md:p-8 flex flex-col md:flex-row justify-center">
       <div className="flex-1">
         {/* Tabs */}
         <div className="inline-flex items-center rounded-full bg-gray-100 p-1 border border-gray-200 shadow-sm">
@@ -393,36 +421,37 @@ const Diagram = () => {
         <div className="mt-6 mx-auto">
           <div
             ref={containerRef}
-            className="h-175 min-w-125 overflow-hidden rounded-2xl border border-gray-200 shadow-sm bg-white relative select-none"
+            className="w-full max-w-full overflow-hidden rounded-2xl border border-gray-200 shadow-sm bg-white relative select-none"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
           >
             <div
-              className="relative h-full w-full"
+              className="relative w-full"
               style={{
                 transform: `scale(${zoom}) translate(${position.x / zoom}px, ${position.y / zoom}px)`,
                 transformOrigin: "center center",
               }}
             >
               {!moduleId ? (
-                <div className="flex h-full w-full items-center justify-center text-gray-400 text-sm text-center px-4">
+                <div className="flex min-h-70 sm:min-h-105 w-full items-center justify-center text-gray-400 text-sm text-center px-4">
                   Please select company, model, moduler and side to view the
                   module.
                 </div>
               ) : photoError ? (
-                <div className="flex h-full w-full items-center justify-center text-gray-400 text-sm text-center px-4">
+                <div className="flex min-h-70 sm:min-h-105 w-full items-center justify-center text-gray-400 text-sm text-center px-4">
                   No circuit board photo uploaded for this module yet.
                 </div>
               ) : (
                 <img
+                  ref={imgRef}
                   src={photoUrl}
                   alt="Circuit board"
                   onDoubleClick={handleDoubleClick}
                   draggable={false}
                   onError={() => setPhotoError(true)}
-                  className={`h-full w-full object-cover ${
+                  className={`block w-full h-auto select-none ${
                     zoom > 1
                       ? isDragging
                         ? "cursor-grabbing"
@@ -433,46 +462,18 @@ const Diagram = () => {
               )}
 
               {visibleParts.map((part) => (
-                <button
+                <PartMarker
                   key={part.id}
-                  type="button"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedPart(part);
-                    if (mode === "dev") {
-                      setPendingCoords({
-                        x: part.x,
-                        y: part.y,
-                        width: part.width ?? 6,
-                        height: part.height ?? 6,
-                      });
-                      setPartDraft({
-                        id: part.id,
-                        name: part.name,
-                        value: part.value,
-                        voltage: part.voltage,
-                        description: part.description || "",
-                      });
-                      setShowPartForm(true);
-                    }
-                  }}
-                  title={part.name}
-                  className={`absolute rounded-sm border-2 shadow-md transition-transform hover:scale-105 ${
-                    overlappingPartIds.has(part.id)
-                      ? "bg-red-500/30 border-red-500"
-                      : !part.published
-                        ? "bg-amber-400/30 border-amber-400"
-                        : "bg-blue-500/30 border-blue-500"
-                  }`}
-                  style={{
-                    left: `${part.x}%`,
-                    top: `${part.y}%`,
-                    width: `${part.width ?? 6}%`,
-                    height: `${part.height ?? 6}%`,
-                  }}
+                  part={part}
+                  isOverlapping={overlappingPartIds.has(part.id)}
+                  onSelect={handleMarkerSelect}
                 />
               ))}
+
+              <SelectionOverlay
+                rect={currentSelectionRect}
+                hasOverlap={overlappingPartIds.size > 0}
+              />
 
               {isSelecting && selectionBox && (
                 <div
@@ -491,258 +492,41 @@ const Diagram = () => {
               )}
             </div>
 
-            <div className="absolute bottom-3 right-3 flex items-center gap-2 bg-white rounded-full shadow-md border border-gray-100 px-2 py-1.5">
-              <button
-                onClick={() =>
-                  setZoom((z) => {
-                    const newZoom = Math.max(1, z - 0.25);
-                    if (newZoom === 1) setPosition({ x: 0, y: 0 });
-                    else setPosition((pos) => clampPosition(pos, newZoom));
-                    return newZoom;
-                  })
-                }
-                className="w-7 h-7 rounded-full text-gray-600 font-medium hover:bg-gray-100 hover:text-gray-900 transition"
-              >
-                −
-              </button>
-              <span className="text-xs text-gray-600 w-10 text-center">
-                {Math.round(zoom * 100)}%
-              </span>
-              <button
-                onClick={() =>
-                  setZoom((z) => {
-                    const newZoom = Math.min(4, z + 0.25);
-                    setPosition((pos) => clampPosition(pos, newZoom));
-                    return newZoom;
-                  })
-                }
-                className="w-7 h-7 rounded-full text-gray-600 font-medium hover:bg-gray-100 hover:text-gray-900 transition"
-              >
-                +
-              </button>
-            </div>
+            <ZoomControls
+              zoom={zoom}
+              onZoomOut={handleZoomOut}
+              onZoomIn={handleZoomIn}
+            />
           </div>
         </div>
       </div>
       {/* component info */}
-      <div className="flex flex-col ml-8 max-w-72 w-full h-fit self-center bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
-        {selectedPart ? (
-          <>
-            <div className="flex items-center gap-2 mb-4 pb-3 border-b border-gray-100">
-              <span className="w-2 h-2 rounded-full bg-blue-500" />
-              <h3 className="text-sm font-semibold text-gray-900 tracking-tight">
-                {selectedPart.name}
-              </h3>
-            </div>
-            <div className="flex justify-between items-center text-sm py-2 border-b border-gray-100">
-              <span className="text-gray-400 text-xs uppercase tracking-wide">
-                Value
-              </span>
-              <span className="font-medium text-gray-900 font-mono text-xs">
-                {selectedPart.value}
-              </span>
-            </div>
-            <div className="flex justify-between items-center text-sm py-2 border-b border-gray-100">
-              <span className="text-gray-400 text-xs uppercase tracking-wide">
-                Voltage
-              </span>
-              <span className="font-medium text-gray-900 font-mono text-xs">
-                {selectedPart.voltage}
-              </span>
-            </div>
-            {selectedPart.description && (
-              <div className="flex flex-col gap-1 text-sm py-2">
-                <span className="text-gray-400 text-xs uppercase tracking-wide">
-                  Description
-                </span>
-                <span className="font-medium text-gray-700 leading-relaxed">
-                  {selectedPart.description}
-                </span>
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="flex flex-col items-center text-center gap-2 py-6">
-            <div className="w-10 h-10 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-300 text-lg">
-              ⓘ
-            </div>
-            <p className="text-sm text-gray-400 leading-relaxed">
-              Click a marker on the image to see part details
-            </p>
-          </div>
-        )}
-      </div>
+      <PartDetailsPanel part={selectedPart} />
 
       {showPartForm && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-[fadeIn_0.15s_ease-out]">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
-            <div className="bg-linear-to-r from-blue-600 to-indigo-600 px-6 py-4">
-              <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                <span className="text-lg">{partDraft.id ? "✏️" : "📍"}</span>
-                {partDraft.id ? "Edit Part" : "Add New Part"}
-              </h3>
-              <p className="text-xs text-blue-100 mt-0.5">
-                {partDraft.id
-                  ? "Update this component's details"
-                  : "Fill in the component's details"}
-              </p>
-            </div>
-            <form
-              onSubmit={handlePartSubmit}
-              className="flex flex-col gap-3 p-6"
-            >
-              <input
-                type="text"
-                placeholder="Part name"
-                value={partDraft.name}
-                onChange={(e) =>
-                  setPartDraft({ ...partDraft, name: e.target.value })
-                }
-                className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                required
-              />
-              <input
-                type="text"
-                placeholder="Part number"
-                value={partDraft.value}
-                onChange={(e) =>
-                  setPartDraft({ ...partDraft, value: e.target.value })
-                }
-                className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                required
-              />
-              <input
-                type="text"
-                placeholder="Voltage"
-                value={partDraft.voltage}
-                onChange={(e) =>
-                  setPartDraft({ ...partDraft, voltage: e.target.value })
-                }
-                className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                required
-              />
-              <textarea
-                placeholder="Description (optional)"
-                value={partDraft.description}
-                onChange={(e) =>
-                  setPartDraft({ ...partDraft, description: e.target.value })
-                }
-                className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                rows={3}
-              />
-              {partError && <p className="text-xs text-red-500">{partError}</p>}
-              <p className="text-xs text-gray-400 -mt-1">
-                📍 Position: {Math.round(pendingCoords?.x ?? 50)}%,{" "}
-                {Math.round(pendingCoords?.y ?? 50)}% &nbsp;•&nbsp; Size:{" "}
-                {Math.round(pendingCoords?.width ?? 6)}% ×{" "}
-                {Math.round(pendingCoords?.height ?? 6)}%
-              </p>
-              <div className="flex justify-end gap-2 mt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowPartForm(false);
-                    setPendingCoords(null);
-                  }}
-                  className="px-4 py-2 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-100 transition"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingPart}
-                  className="px-5 py-2 rounded-full text-sm font-medium bg-linear-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isSavingPart
-                    ? "Saving..."
-                    : partDraft.id
-                      ? "Update"
-                      : "Continue →"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <AddEditPartModal
+          draft={partDraft}
+          onChange={setPartDraft}
+          pendingCoords={pendingCoords}
+          error={partError}
+          isSaving={isSavingPart}
+          onCancel={() => {
+            setShowPartForm(false);
+            setPendingCoords(null);
+          }}
+          onSubmit={handlePartSubmit}
+        />
       )}
 
       {showCustomerForm && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-[fadeIn_0.15s_ease-out]">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
-            <div className="bg-linear-to-r from-emerald-600 to-teal-600 px-6 py-4">
-              <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                <span className="text-lg">👤</span> Customer Info
-              </h3>
-              <p className="text-xs text-emerald-100 mt-0.5">
-                Saved once — you won't need to fill this again
-              </p>
-            </div>
-            <form
-              onSubmit={handleCustomerSubmit}
-              className="flex flex-col gap-3 p-6"
-            >
-              <input
-                type="text"
-                placeholder="Customer name"
-                value={customer.name}
-                onChange={(e) =>
-                  setCustomer({ ...customer, name: e.target.value })
-                }
-                className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition"
-                required
-              />
-              <input
-                type="tel"
-                placeholder="Phone number"
-                value={customer.phone}
-                minLength={10}
-                maxLength={10}
-                pattern="[0-9]{10}"
-                onChange={(e) => {
-                  const value = e.target.value.replace(/\D/g, "").slice(0, 10);
-                  setCustomer({ ...customer, phone: value });
-                }}
-                className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition"
-                required
-              />
-              <input
-                type="email"
-                placeholder="Email"
-                value={customer.email}
-                onChange={(e) =>
-                  setCustomer({ ...customer, email: e.target.value })
-                }
-                className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition"
-                required
-              />
-              <input
-                type="text"
-                placeholder="Business name (optional)"
-                value={customer.business}
-                onChange={(e) =>
-                  setCustomer({ ...customer, business: e.target.value })
-                }
-                className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition"
-              />
-              {partError && <p className="text-xs text-red-500">{partError}</p>}
-              <div className="flex justify-end gap-2 mt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowCustomerForm(false)}
-                  className="px-4 py-2 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-100 transition"
-                >
-                  Skip
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingPart}
-                  className="px-5 py-2 rounded-full text-sm font-medium bg-linear-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isSavingPart ? "Saving..." : "Save"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <CustomerInfoModal
+          customer={customer}
+          onChange={setCustomer}
+          error={partError}
+          isSaving={isSavingPart}
+          onSkip={() => setShowCustomerForm(false)}
+          onSubmit={handleCustomerSubmit}
+        />
       )}
     </div>
   );
